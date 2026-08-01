@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from scipy.stats import kurtosis, norm, skew
+from scipy.stats import kurtosis, norm, skew, t as student_t
 import streamlit as st
 import yfinance as yf
 from arch import arch_model
@@ -247,6 +247,10 @@ with st.sidebar:
     window = st.slider("Rolling window (trading days)", 10, 90, 21)
     ewma_lambda = st.slider("EWMA decay factor (λ)", 0.80, 0.99, 0.94, 0.01)
     use_demo = st.toggle("Use classroom simulation", value=False)
+    st.markdown("### Tail-risk controls")
+    risk_confidence = st.select_slider("VaR / ES confidence level", options=[0.90, 0.95, 0.975, 0.99], value=0.975, format_func=lambda x: f"{x:.1%}")
+    holding_days = st.select_slider("Holding period", options=[1, 5, 10, 20], value=10, format_func=lambda x: f"{x} trading day" if x == 1 else f"{x} trading days")
+    portfolio_value = st.number_input("Illustrative portfolio value (₹)", 100_000, 100_000_000, 1_000_000, 100_000)
     st.markdown("---")
     st.caption("Prices: Yahoo Finance adjusted daily close. Values may be delayed or differ by provider convention.")
     cache_was_refreshed = st.session_state.pop("cache_was_refreshed", False)
@@ -296,7 +300,7 @@ m3.metric(f"Latest {window}D volatility", f"{prices['Rolling volatility'].dropna
 m4.metric("Last market date", prices.index[-1].strftime("%d %b %Y"))
 st.caption(f"{asset} ({ticker}) · {len(prices):,} daily observations · {source}")
 
-tabs = st.tabs(["🎓 Educational", "🧭 Characteristics map", "🌊 Time variation", "🔗 Clustering & persistence", "⚖️ Asymmetry", "📊 Fat tails", "🔮 Forecasting models", "🧮 10 solved illustrations", "🧪 Learning check"])
+tabs = st.tabs(["🎓 Educational", "🧭 Characteristics map", "🌊 Time variation", "🔗 Clustering & persistence", "⚖️ Asymmetry", "📊 Fat tails", "🔮 Forecasting models", "🛡️ VaR & Basel ES", "🧮 10 solved illustrations", "🧪 Learning check"])
 
 with tabs[0]:
     section("What volatility is—and what it is not")
@@ -433,6 +437,88 @@ with tabs[6]:
     note("A forecast is conditional on the selected history and model. Compare models, examine residual diagnostics, and re-estimate after major regime changes; never treat a single estimate as certainty.", warning=True)
 
 with tabs[7]:
+    section("Compare Value at Risk and Expected Shortfall")
+    st.markdown("<div class='formula'>VaR is a loss threshold. Expected Shortfall is the average loss beyond that threshold.</div>", unsafe_allow_html=True)
+    try:
+        with st.spinner("Generating volatility-conditioned tail-risk estimates…"):
+            risk_forecasts, _ = fit_forecasting_models(prices["Return"], holding_days, ewma_lambda)
+
+        confidence, tail_probability = risk_confidence, 1 - risk_confidence
+        z = norm.ppf(confidence)
+        clean_returns = prices["Return"].dropna()
+        fitted_df, _, _ = student_t.fit(clean_returns, floc=0)
+        fitted_df = max(float(fitted_df), 2.1)
+        t_lower_q = student_t.ppf(tail_probability, fitted_df)
+        t_standardiser = math.sqrt((fitted_df - 2) / fitted_df)
+        t_var_multiplier = -t_lower_q * t_standardiser
+        t_es_multiplier = t_standardiser * ((fitted_df + t_lower_q ** 2) / (fitted_df - 1)) * student_t.pdf(t_lower_q, fitted_df) / tail_probability
+
+        rows = []
+        for forecast_model in risk_forecasts.columns:
+            annual_path = risk_forecasts[forecast_model].to_numpy() / 100
+            horizon_sigma = math.sqrt(float(np.sum((annual_path ** 2) / 252)))
+            rows.extend([
+                {"Volatility forecast": forecast_model, "Tail model": "Normal parametric", "VaR (₹)": portfolio_value * z * horizon_sigma, "Expected Shortfall (₹)": portfolio_value * norm.pdf(z) / tail_probability * horizon_sigma, "Horizon volatility": horizon_sigma},
+                {"Volatility forecast": forecast_model, "Tail model": f"Student-t (ν={fitted_df:.1f})", "VaR (₹)": portfolio_value * t_var_multiplier * horizon_sigma, "Expected Shortfall (₹)": portfolio_value * t_es_multiplier * horizon_sigma, "Horizon volatility": horizon_sigma},
+            ])
+
+        horizon_returns = clean_returns.rolling(holding_days).sum().dropna() if holding_days > 1 else clean_returns
+        loss_returns = -horizon_returns
+        hist_var_rate = float(loss_returns.quantile(confidence))
+        hist_tail = loss_returns[loss_returns >= hist_var_rate]
+        hist_es_rate = float(hist_tail.mean()) if not hist_tail.empty else hist_var_rate
+        rows.append({"Volatility forecast": "Observed sample", "Tail model": "Historical simulation", "VaR (₹)": portfolio_value * hist_var_rate, "Expected Shortfall (₹)": portfolio_value * hist_es_rate, "Horizon volatility": float(horizon_returns.std())})
+        risk_table = pd.DataFrame(rows)
+
+        a, b, c, d = st.columns(4)
+        selected_row = risk_table[(risk_table["Volatility forecast"] == "GARCH(1,1)") & (risk_table["Tail model"] == "Normal parametric")].iloc[0]
+        a.metric("Confidence", f"{confidence:.1%}")
+        b.metric("Holding period", f"{holding_days}D")
+        c.metric("GARCH normal VaR", f"₹{selected_row['VaR (₹)']:,.0f}")
+        d.metric("GARCH normal ES", f"₹{selected_row['Expected Shortfall (₹)']:,.0f}")
+
+        plot_table = risk_table.copy()
+        plot_table["Method"] = plot_table["Volatility forecast"] + " · " + plot_table["Tail model"]
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=plot_table["Method"], y=plot_table["VaR (₹)"], name="VaR", marker_color=BLUE))
+        fig.add_trace(go.Bar(x=plot_table["Method"], y=plot_table["Expected Shortfall (₹)"], name="Expected Shortfall", marker_color=RED))
+        fig.update_layout(title=f"Tail-risk comparison · {confidence:.1%} confidence · {holding_days}-day horizon", barmode="group")
+        fig.update_xaxes(title=""); fig.update_yaxes(title="Illustrative loss (₹)", tickformat=",")
+        st.plotly_chart(style_fig(fig, 520), use_container_width=True)
+
+        section("Loss distribution and tail area")
+        distribution_losses = loss_returns * portfolio_value
+        fig = go.Figure(go.Histogram(x=distribution_losses, nbinsx=55, histnorm="probability density", marker_color=BLUE, opacity=.72, name="Observed horizon losses"))
+        fig.add_vline(x=portfolio_value * hist_var_rate, line_color=GOLD, line_width=3, annotation_text="Historical VaR", annotation_position="top")
+        fig.add_vline(x=portfolio_value * hist_es_rate, line_color=RED, line_width=3, annotation_text="Historical ES", annotation_position="top right")
+        fig.update_layout(title=f"Observed {holding_days}-day loss distribution with the worst {tail_probability:.1%} tail")
+        fig.update_xaxes(title="Loss (₹; negative values are gains)"); fig.update_yaxes(title="Density")
+        st.plotly_chart(style_fig(fig, 460), use_container_width=True)
+
+        st.dataframe(risk_table.style.format({"VaR (₹)": "₹{:,.0f}", "Expected Shortfall (₹)": "₹{:,.0f}", "Horizon volatility": "{:.2%}"}), use_container_width=True, hide_index=True)
+
+        section("Basel Expected Shortfall view")
+        basel_returns = clean_returns.rolling(10).sum().dropna()
+        basel_losses = -basel_returns
+        basel_var_rate = float(basel_losses.quantile(.975))
+        basel_es_rate = float(basel_losses[basel_losses >= basel_var_rate].mean())
+        ba, bb, bc = st.columns(3)
+        ba.metric("Basel confidence convention", "97.5% one-tailed")
+        bb.metric("Base liquidity horizon", "10 trading days")
+        bc.metric("Simplified historical ES", f"₹{portfolio_value * basel_es_rate:,.0f}")
+        note("Basel's market-risk internal-model approach uses daily ES at a 97.5% one-tailed confidence level and starts liquidity-horizon scaling from a 10-day base horizon. The figure here is a simplified single-equity teaching benchmark; it is not a regulatory capital calculation because it does not implement stressed calibration, risk-factor liquidity buckets, reduced-factor scaling, modellability tests, desk approval or capital multipliers.", warning=True)
+        st.markdown("Official reference: [Basel Framework MAR33 — Internal models approach](https://www.bis.org/basel_framework/chapter/MAR/33.htm)")
+    except Exception as exc:
+        st.error(f"Tail-risk estimates could not be calculated for this sample: {exc}")
+
+    section("Model meaning and limitations")
+    r1, r2, r3 = st.columns(3)
+    r1.markdown(card("Historical VaR / ES", "Uses realised overlapping horizon losses. It captures the sample's non-normal shape but cannot represent events absent from history and is sensitive to the chosen window.", PURPLE), unsafe_allow_html=True)
+    r2.markdown(card("Normal parametric", "Uses the selected volatility forecast and a normal tail. It is transparent and fast, but often understates fat-tail and asymmetry risk.", BLUE), unsafe_allow_html=True)
+    r3.markdown(card("Student-t parametric", "Combines forecast volatility with heavier fitted tails. It can improve tail sensitivity, but results depend strongly on degrees of freedom and distribution fit.", ORANGE), unsafe_allow_html=True)
+    note("VaR does not describe how severe losses become after the threshold is breached. ES addresses that gap by averaging tail losses, but it remains model- and sample-dependent.")
+
+with tabs[8]:
     section("Ten solved illustrations")
     note("Each illustration uses daily returns and the √252 annualisation convention. Percentage-return calculations are shown in percentage points unless stated otherwise.")
     illustrations = [
@@ -454,7 +540,7 @@ with tabs[7]:
     section("Connect the illustrations to the live forecast")
     note("Illustrations 1–3 explain the sidebar EWMA decay control; 4–5 explain ARCH; 6–8 explain GARCH persistence and mean reversion; 9 motivates EGARCH; and 10 shows how to compare the live model outputs responsibly.")
 
-with tabs[8]:
+with tabs[9]:
     section("Test the interpretation, not the arithmetic")
     questions = [
         ("Volatility clustering means…", ["large moves tend to follow large moves", "returns must reverse tomorrow", "prices always fall after a shock"], 0),
