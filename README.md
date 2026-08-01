@@ -1,4 +1,4 @@
-# Understanding Characteristics of Volatility
+# Real-Time VaR and Expected Shortfall Estimation (Basel Framework) Using Forecasted Volatilities (EWMA, ARCH, GARCH, EGARCH)
 
 An interactive Streamlit learning studio in the Mountain Path Academy navy-and-gold design language. It uses adjusted daily market prices to make six properties of volatility visible:
 
