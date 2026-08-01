@@ -309,7 +309,7 @@ m3.metric(f"Latest {window}D volatility", f"{prices['Rolling volatility'].dropna
 m4.metric("Last market date", prices.index[-1].strftime("%d %b %Y"))
 st.caption(f"{asset} ({ticker}) · {len(prices):,} daily observations · {source}")
 
-tabs = st.tabs(["🎓 Educational", "🧭 Characteristics map", "🌊 Time variation", "🔗 Clustering & persistence", "⚖️ Asymmetry", "📊 Fat tails", "🔮 Forecasting models", "🛡️ VaR & Basel ES", "🧮 10 solved illustrations", "🧪 Learning check"])
+tabs = st.tabs(["🎓 Educational", "🧭 Characteristics map", "🌊 Time variation", "🔗 Clustering & persistence", "⚖️ Asymmetry", "📊 Fat tails", "⚠️ Historic volatility limits", "🔮 Forecasting models", "🛡️ VaR & Basel ES", "🧮 10 solved illustrations", "🧪 Learning check"])
 
 with tabs[0]:
     section("What volatility is—and what it is not")
@@ -404,6 +404,40 @@ with tabs[5]:
     note("A normal distribution has excess kurtosis of 0. A positive estimate indicates heavier tails in this sample, making extreme returns more common than the fitted bell curve suggests.")
 
 with tabs[6]:
+    section("Why historic volatility can mislead VaR and Expected Shortfall")
+    st.markdown("<div class='formula'>Historic volatility is useful evidence—but it is not automatically a forward-looking risk forecast.</div>", unsafe_allow_html=True)
+    downside_rows = [
+        [("Backward-looking", "Historic volatility describes the selected past. It cannot anticipate a new crisis, policy shock, liquidity event or structural break that is absent from the sample.", RED), ("Equal weighting", "A conventional full-sample estimate gives an old calm observation the same weight as a recent turbulent one, making risk estimates slow to respond.", ORANGE)],
+        [("Window dependence", "A short history reacts quickly but is noisy; a long history is stable but may mix incompatible market regimes. VaR and ES can change materially with the chosen start date.", PURPLE), ("Volatility is not the tail", "Standard deviation alone does not describe skewness, jumps or fat tails. Normal VaR/ES can therefore understate extreme losses even when volatility is estimated correctly.", BLUE)],
+        [("Square-root scaling", "Scaling one-day volatility by √h assumes stable variance and weak dependence. Clustering, autocorrelation and nonlinear positions can invalidate this shortcut.", TEAL), ("Historical ES instability", "ES averages relatively few extreme observations. At high confidence levels, a limited sample can make the estimate noisy and dominated by one or two events.", GOLD)],
+    ]
+    for row in downside_rows:
+        cols = st.columns(2)
+        for col, item in zip(cols, row): col.markdown(card(*item), unsafe_allow_html=True)
+
+    section("How the selected history changes the answer")
+    short_sample = prices["Return"].tail(min(252, len(prices)))
+    long_sample = prices["Return"]
+    hs1, hs2, hs3 = st.columns(3)
+    hs1.metric("Latest 1Y historic volatility", f"{short_sample.std() * np.sqrt(252) * 100:.2f}%")
+    hs2.metric(f"Selected {years}Y historic volatility", f"{long_sample.std() * np.sqrt(252) * 100:.2f}%")
+    hs3.metric("Difference", f"{(short_sample.std() - long_sample.std()) * np.sqrt(252) * 100:+.2f} pp")
+    compare_fig = go.Figure()
+    compare_fig.add_trace(go.Scatter(x=prices.index, y=prices["Rolling volatility"], name=f"Rolling {window}D", line=dict(color=PURPLE, width=2)))
+    compare_fig.add_hline(y=short_sample.std() * np.sqrt(252) * 100, line_color=RED, line_dash="dash", annotation_text="Latest 1Y")
+    compare_fig.add_hline(y=long_sample.std() * np.sqrt(252) * 100, line_color=BLUE, line_dash="dot", annotation_text="Full selected history")
+    compare_fig.update_layout(title="Rolling risk versus fixed historic-volatility estimates"); compare_fig.update_yaxes(title="Annualised volatility (%)")
+    st.plotly_chart(style_fig(compare_fig, 460), use_container_width=True)
+
+    section("Better practice")
+    bp1, bp2, bp3, bp4 = st.columns(4)
+    bp1.markdown(card("Use conditional models", "Compare historic volatility with EWMA, GARCH and EGARCH estimates that react to current information.", TEAL), unsafe_allow_html=True)
+    bp2.markdown(card("Model the tail", "Use historical simulation, Student-t or suitable scenario methods instead of assuming volatility alone defines extreme losses.", ORANGE), unsafe_allow_html=True)
+    bp3.markdown(card("Stress and backtest", "Test crisis scenarios and compare realised exceptions with VaR and ES forecasts through time.", RED), unsafe_allow_html=True)
+    bp4.markdown(card("Disclose sensitivity", "Show how results change across lookback windows, confidence levels, horizons and model choices.", BLUE), unsafe_allow_html=True)
+    note("Historic volatility should be treated as one benchmark within a broader risk framework—not as a complete tail-risk model.", warning=True)
+
+with tabs[7]:
     section("Forecast volatility with four conditional models")
     horizon = st.slider("Forward forecast horizon (trading days)", 1, 30, 10, key="forecast_horizon")
     st.markdown("<div class='formula'>All plotted forecasts are annualised: forecast daily standard deviation × √252</div>", unsafe_allow_html=True)
@@ -445,7 +479,7 @@ with tabs[6]:
     ]): col.markdown(card(*item), unsafe_allow_html=True)
     note("A forecast is conditional on the selected history and model. Compare models, examine residual diagnostics, and re-estimate after major regime changes; never treat a single estimate as certainty.", warning=True)
 
-with tabs[7]:
+with tabs[8]:
     section("Compare Value at Risk and Expected Shortfall")
     st.markdown("<div class='formula'>VaR is a loss threshold. Expected Shortfall is the average loss beyond that threshold.</div>", unsafe_allow_html=True)
     try:
@@ -527,17 +561,6 @@ with tabs[7]:
     r3.markdown(card("Student-t parametric", "Combines forecast volatility with heavier fitted tails. It can improve tail sensitivity, but results depend strongly on degrees of freedom and distribution fit.", ORANGE), unsafe_allow_html=True)
     note("VaR does not describe how severe losses become after the threshold is breached. ES addresses that gap by averaging tail losses, but it remains model- and sample-dependent.")
 
-    section("Why historic volatility can mislead VaR and ES")
-    downside_rows = [
-        [("Backward-looking", "Historic volatility describes the selected past. It cannot anticipate a new crisis, policy shock, liquidity event or structural break that is absent from the sample.", RED), ("Equal weighting", "A conventional full-sample estimate gives an old calm observation the same weight as a recent turbulent one, making risk estimates slow to respond.", ORANGE)],
-        [("Window dependence", "A short history reacts quickly but is noisy; a long history is stable but may mix incompatible market regimes. VaR and ES can change materially with the chosen start date.", PURPLE), ("Volatility is not the tail", "Standard deviation alone does not describe skewness, jumps or fat tails. Normal VaR/ES can therefore understate extreme losses even when volatility is estimated correctly.", BLUE)],
-        [("Square-root scaling", "Scaling one-day volatility by √h assumes stable variance and weak dependence. Clustering, autocorrelation and nonlinear positions can invalidate this shortcut.", TEAL), ("Historical ES instability", "ES averages relatively few extreme observations. At high confidence levels, a limited sample can make the estimate noisy and dominated by one or two events.", GOLD)],
-    ]
-    for row in downside_rows:
-        cols = st.columns(2)
-        for col, item in zip(cols, row): col.markdown(card(*item), unsafe_allow_html=True)
-    note("Better practice is to compare historical estimates with responsive conditional forecasts such as EWMA/GARCH, use distributions or simulations that recognise tail shape, conduct stress tests, backtest exceptions and ES performance, and disclose sensitivity to window and horizon choices.", warning=True)
-
     section("VaR and Expected Shortfall learning deck · solved problems")
     tail_lessons = [
         ("1 · One-day normal VaR", "A ₹10,00,000 portfolio has forecast daily volatility of 1.25%. Find 99% one-day VaR, assuming zero mean.", "VaR = ₹10,00,000 × 2.326 × 1.25% = ₹29,075. Interpretation: under the model, only 1% of days are expected to lose more than this threshold."),
@@ -554,7 +577,7 @@ with tabs[7]:
             st.markdown(f"**Problem.** {problem}")
             st.markdown(f"**Solved answer.** {answer}")
 
-with tabs[8]:
+with tabs[9]:
     section("Ten solved illustrations")
     note("Each illustration uses daily returns and the √252 annualisation convention. Percentage-return calculations are shown in percentage points unless stated otherwise.")
     illustrations = [
@@ -576,7 +599,7 @@ with tabs[8]:
     section("Connect the illustrations to the live forecast")
     note("Illustrations 1–3 explain the sidebar EWMA decay control; 4–5 explain ARCH; 6–8 explain GARCH persistence and mean reversion; 9 motivates EGARCH; and 10 shows how to compare the live model outputs responsibly.")
 
-with tabs[9]:
+with tabs[10]:
     section("Test the interpretation, not the arithmetic")
     questions = [
         ("Volatility clustering means…", ["large moves tend to follow large moves", "returns must reverse tomorrow", "prices always fall after a shock"], 0),
