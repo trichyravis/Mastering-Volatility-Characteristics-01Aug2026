@@ -12,6 +12,7 @@ from plotly.subplots import make_subplots
 from scipy.stats import kurtosis, norm, skew
 import streamlit as st
 import yfinance as yf
+from arch import arch_model
 
 
 st.set_page_config(
@@ -106,6 +107,53 @@ def demo_prices(years: int) -> pd.DataFrame:
 def volatility_acf(series: pd.Series, lags: int) -> pd.DataFrame:
     squared = series.pow(2)
     return pd.DataFrame({"Lag": range(1, lags + 1), "Squared-return autocorrelation": [squared.autocorr(i) for i in range(1, lags + 1)]})
+
+
+@st.cache_data(show_spinner=False)
+def fit_forecasting_models(returns: pd.Series, horizon: int, decay: float) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Fit four teaching models and return annualised percentage-volatility forecasts."""
+    r = (returns.dropna() * 100).clip(-25, 25)
+    if len(r) < 150:
+        raise ValueError("At least 150 daily returns are required for stable model fitting.")
+    models = {
+        "ARCH(5)": arch_model(r, mean="Constant", vol="ARCH", p=5, dist="t", rescale=False),
+        "GARCH(1,1)": arch_model(r, mean="Constant", vol="GARCH", p=1, q=1, dist="t", rescale=False),
+        "EGARCH(1,1)": arch_model(r, mean="Constant", vol="EGARCH", p=1, o=1, q=1, dist="t", rescale=False),
+    }
+    dates = pd.bdate_range(returns.index[-1] + pd.Timedelta(days=1), periods=horizon)
+    latest_ewma = returns.ewm(alpha=1 - decay, adjust=False).var(bias=False).iloc[-1]
+    forecasts = pd.DataFrame({"EWMA": np.repeat(np.sqrt(latest_ewma * 252) * 100, horizon)}, index=dates)
+    diagnostics = [{"Model": "EWMA", "Persistence": decay, "AIC": np.nan, "Log likelihood": np.nan, "Fit status": "Fixed decay; not estimated"}]
+    for name, specification in models.items():
+        fit = specification.fit(disp="off")
+        fit_note = "Converged" if fit.convergence_flag == 0 else f"Optimizer code {fit.convergence_flag}"
+        if name == "EGARCH(1,1)":
+            # arch provides an analytic EGARCH forecast only at h=1. For later steps,
+            # the expected centred innovation terms are zero, leaving log variance
+            # to mean-revert through omega + beta * log(previous variance).
+            first_variance = float(fit.forecast(horizon=1, reindex=False).variance.iloc[-1, 0])
+            variance_ceiling = max(float(r.var()) * 100, 1.0)
+            if not np.isfinite(first_variance) or first_variance <= 0 or first_variance > variance_ceiling:
+                first_variance = float(fit.conditional_volatility.iloc[-1] ** 2)
+                fit_note += " · first step uses latest fitted variance"
+            if not np.isfinite(first_variance) or first_variance <= 0 or first_variance > variance_ceiling:
+                first_variance = float(r.var())
+                fit_note += " · unstable fit fallback uses sample variance"
+            omega, beta = float(fit.params.get("omega", 0)), float(fit.params.get("beta[1]", 0))
+            variance = [first_variance]
+            log_variance = math.log(max(first_variance, 1e-10))
+            for _ in range(1, horizon):
+                log_variance = float(np.clip(omega + beta * log_variance, -12, 8))
+                variance.append(math.exp(log_variance))
+            variance = np.asarray(variance)
+        else:
+            variance = fit.forecast(horizon=horizon, reindex=False).variance.iloc[-1].to_numpy()
+        forecasts[name] = np.sqrt(np.maximum(variance, 0) * 252)
+        params = fit.params
+        if name == "ARCH(5)": persistence = sum(float(params.get(f"alpha[{i}]", 0)) for i in range(1, 6))
+        else: persistence = float(params.get("beta[1]", np.nan)) + (float(params.get("alpha[1]", 0)) if name == "GARCH(1,1)" else 0)
+        diagnostics.append({"Model": name, "Persistence": persistence, "AIC": fit.aic, "Log likelihood": fit.loglikelihood, "Fit status": fit_note})
+    return forecasts, pd.DataFrame(diagnostics)
 
 
 def build_excel_download(data: pd.DataFrame, asset: str, ticker: str, source: str, window: int, decay: float) -> bytes:
@@ -248,7 +296,7 @@ m3.metric(f"Latest {window}D volatility", f"{prices['Rolling volatility'].dropna
 m4.metric("Last market date", prices.index[-1].strftime("%d %b %Y"))
 st.caption(f"{asset} ({ticker}) · {len(prices):,} daily observations · {source}")
 
-tabs = st.tabs(["🎓 Educational", "🧭 Characteristics map", "🌊 Time variation", "🔗 Clustering & persistence", "⚖️ Asymmetry", "📊 Fat tails", "🧪 Learning check"])
+tabs = st.tabs(["🎓 Educational", "🧭 Characteristics map", "🌊 Time variation", "🔗 Clustering & persistence", "⚖️ Asymmetry", "📊 Fat tails", "🔮 Forecasting models", "🧮 10 solved illustrations", "🧪 Learning check"])
 
 with tabs[0]:
     section("What volatility is—and what it is not")
@@ -343,6 +391,70 @@ with tabs[5]:
     note("A normal distribution has excess kurtosis of 0. A positive estimate indicates heavier tails in this sample, making extreme returns more common than the fitted bell curve suggests.")
 
 with tabs[6]:
+    section("Forecast volatility with four conditional models")
+    horizon = st.slider("Forward forecast horizon (trading days)", 1, 30, 10, key="forecast_horizon")
+    st.markdown("<div class='formula'>All plotted forecasts are annualised: forecast daily standard deviation × √252</div>", unsafe_allow_html=True)
+    try:
+        with st.spinner("Fitting ARCH-family models…"):
+            model_forecasts, model_diagnostics = fit_forecasting_models(prices["Return"], horizon, ewma_lambda)
+        fig = go.Figure()
+        forecast_colors = {"EWMA": GOLD, "ARCH(5)": PURPLE, "GARCH(1,1)": BLUE, "EGARCH(1,1)": RED}
+        for model in model_forecasts:
+            fig.add_trace(go.Scatter(x=model_forecasts.index, y=model_forecasts[model], mode="lines+markers", name=model, line=dict(color=forecast_colors[model], width=3)))
+        fig.update_layout(title=f"{horizon}-day annualised volatility forecast · {asset}", hovermode="x unified")
+        fig.update_xaxes(title="Forecast business date"); fig.update_yaxes(title="Annualised volatility (%)")
+        st.plotly_chart(style_fig(fig, 480), use_container_width=True)
+        metric_cols = st.columns(4)
+        for col, model in zip(metric_cols, model_forecasts.columns):
+            col.metric(f"{model} · Day 1", f"{model_forecasts[model].iloc[0]:.2f}%", delta=f"Day {horizon}: {model_forecasts[model].iloc[-1]:.2f}%")
+        with st.expander("Model diagnostics and comparison", expanded=False):
+            st.dataframe(model_diagnostics.style.format({"Persistence": "{:.3f}", "AIC": "{:,.1f}", "Log likelihood": "{:,.1f}"}, na_rep="—"), use_container_width=True, hide_index=True)
+            st.caption("A lower AIC is preferable only when models use the same return sample. Persistence close to 1 implies slow decay, but definitions differ across model families.")
+    except Exception as exc:
+        st.error(f"The forecasting models could not be fitted for this sample: {exc}")
+
+    section("How the forecasting models work")
+    model_rows = [
+        [("EWMA", "Updates variance with a fixed decay: σ²ₜ = λσ²ₜ₋₁ + (1−λ)r²ₜ₋₁. It reacts quickly and needs no numerical fitting.", GOLD), ("ARCH(5)", "Forecasts variance from a constant plus five recent squared shocks. Each lag receives its own estimated weight.", PURPLE)],
+        [("GARCH(1,1)", "Combines the latest squared shock with the previous conditional variance, producing a compact and persistent forecast.", BLUE), ("EGARCH(1,1)", "Models log variance and includes a sign term, allowing negative and positive shocks to affect future volatility differently.", RED)],
+    ]
+    for row in model_rows:
+        cols = st.columns(2)
+        for col, item in zip(cols, row): col.markdown(card(*item), unsafe_allow_html=True)
+
+    section("Limitations to state with every forecast")
+    limitations = st.columns(4)
+    for col, item in zip(limitations, [
+        ("EWMA", "The decay factor is imposed, forecasts are flat without mean reversion, and shock direction is ignored.", GOLD),
+        ("ARCH", "Many lags consume parameters, estimates can be unstable, and long-memory behaviour is represented inefficiently.", PURPLE),
+        ("GARCH", "The standard form treats equal-sized positive and negative shocks symmetrically and can miss jumps or structural breaks.", BLUE),
+        ("EGARCH", "Results depend on specification and distribution; multi-step expected log-variance recursion can smooth away future shock uncertainty.", RED),
+    ]): col.markdown(card(*item), unsafe_allow_html=True)
+    note("A forecast is conditional on the selected history and model. Compare models, examine residual diagnostics, and re-estimate after major regime changes; never treat a single estimate as certainty.", warning=True)
+
+with tabs[7]:
+    section("Ten solved illustrations")
+    note("Each illustration uses daily returns and the √252 annualisation convention. Percentage-return calculations are shown in percentage points unless stated otherwise.")
+    illustrations = [
+        ("1 · EWMA one-step variance update", "Given λ = 0.94, yesterday's volatility = 1.20%, and yesterday's return = −2.00%.", "σ²ₜ = 0.94(1.20²) + 0.06(2.00²) = 1.5936. Therefore σₜ = √1.5936 = 1.262% daily, or 1.262% × √252 = 20.03% annualised."),
+        ("2 · EWMA half-life", "Find how long a shock retains half its original weight when λ = 0.94.", "Half-life = ln(0.5) / ln(0.94) = 11.20 trading days. Thus the shock's weight falls to about 50% after 11 sessions."),
+        ("3 · Compare two EWMA decay factors", "A 3% shock follows a 1% variance estimate. Compare λ = 0.94 with λ = 0.97.", "λ=.94: new variance = .94(1²)+.06(3²)=1.48, so volatility=1.217%. λ=.97: variance=.97(1²)+.03(3²)=1.24, so volatility=1.114%. The lower λ reacts more strongly."),
+        ("4 · ARCH(2) one-step forecast", "Use ω = 0.05, α₁ = 0.30, α₂ = 0.20, with the last two returns 2% and −1%.", "σ²ₜ₊₁ = 0.05 + 0.30(2²) + 0.20(−1²) = 1.45. Forecast daily volatility = √1.45 = 1.204%, or 19.11% annualised."),
+        ("5 · ARCH persistence", "An ARCH(3) has α₁=.25, α₂=.20 and α₃=.15. Interpret persistence.", "Sum of ARCH weights = .25+.20+.15=.60. Sixty percent of recent squared-shock influence carries through the lag structure; because it is below 1, shocks decay rather than explode."),
+        ("6 · GARCH(1,1) one-step forecast", "Use ω=.04, α=.10, β=.85, yesterday's return=−2%, and variance=1.44.", "σ²ₜ₊₁=.04+.10(−2²)+.85(1.44)=1.664. Daily volatility=√1.664=1.290%, or 20.48% annualised."),
+        ("7 · GARCH long-run variance", "For ω=.04, α=.10 and β=.85, calculate the unconditional variance.", "Long-run variance = ω/(1−α−β) = .04/(1−.95)=.80. Long-run daily volatility=√.80=.894%, or 14.20% annualised. This exists because α+β<1."),
+        ("8 · GARCH shock half-life", "A fitted GARCH model has α+β=.95. Estimate the variance-shock half-life.", "Half-life = ln(.5)/ln(.95)=13.51 trading days. The model expects half the shock effect to remain after roughly 14 sessions."),
+        ("9 · EGARCH leverage interpretation", "An EGARCH sign coefficient γ = −0.12 is estimated. What does it imply?", "Because γ is negative, a negative standardised shock increases log variance more than an equal-sized positive shock. This is evidence consistent with a leverage/asymmetry effect; significance and residual diagnostics must still be checked."),
+        ("10 · Select and communicate a forecast", "EWMA, ARCH, GARCH and EGARCH forecast 18%, 22%, 20% and 24% annualised volatility. Which is correct?", "None is automatically 'correct'. Report the range (18%–24%), compare out-of-sample forecast errors, review AIC only as in-sample evidence, and prefer a model whose assumptions match the observed clustering/asymmetry. Communicate 21% as a simple model-average benchmark only with that caveat."),
+    ]
+    for title, question, solution in illustrations:
+        with st.expander(title, expanded=False):
+            st.markdown(f"**Problem.** {question}")
+            st.markdown(f"**Solved answer.** {solution}")
+    section("Connect the illustrations to the live forecast")
+    note("Illustrations 1–3 explain the sidebar EWMA decay control; 4–5 explain ARCH; 6–8 explain GARCH persistence and mean reversion; 9 motivates EGARCH; and 10 shows how to compare the live model outputs responsibly.")
+
+with tabs[8]:
     section("Test the interpretation, not the arithmetic")
     questions = [
         ("Volatility clustering means…", ["large moves tend to follow large moves", "returns must reverse tomorrow", "prices always fall after a shock"], 0),
