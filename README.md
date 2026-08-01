@@ -9,7 +9,7 @@ An interactive Streamlit learning studio in the Mountain Path Academy navy-and-g
 - fat-tailed return distributions; and
 - sensitivity to the measurement horizon and method.
 
-Learners can select a major Nifty instrument, change the sample and rolling-window assumptions, compare rolling and EWMA estimates, inspect squared-return autocorrelations, explore asymmetry and tail behaviour, complete a short knowledge check, and download the analysed data.
+Learners can select a major Nifty instrument, study a dedicated educational primer, change the sample and rolling-window assumptions, compare rolling and EWMA estimates, inspect squared-return autocorrelations, explore asymmetry and tail behaviour, forecast with EWMA, ARCH(5), GARCH(1,1) and EGARCH(1,1), compare historical/normal/Student-t VaR and Expected Shortfall using configurable confidence and holding-period controls, review a simplified Basel-oriented 97.5%/10-day ES view, work through ten solved illustrations, complete a short knowledge check, and download a professionally formatted Excel workbook with a summary, daily observations, formulas, chart and learning guide.
 
 ## Run locally
 
