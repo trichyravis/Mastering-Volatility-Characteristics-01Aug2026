@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 from datetime import date, timedelta
@@ -43,6 +44,14 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif}.stApp{background:linear
 .stButton button:hover,.stDownloadButton button:hover{background:#D4A017!important;color:#071A2F!important;border-color:#D4A017!important}
 section[data-testid="stSidebar"] div[data-testid="stButton"] button{background:linear-gradient(135deg,#F3C84B,#D4A017)!important;color:#071A2F!important;-webkit-text-fill-color:#071A2F!important;border:2px solid #F9DC79!important;min-height:46px!important;border-radius:11px!important;font-weight:850!important;box-shadow:0 5px 14px rgba(0,0,0,.22)!important}section[data-testid="stSidebar"] div[data-testid="stButton"] button:hover{background:#FFF1AC!important;border-color:#FFF1AC!important;transform:translateY(-1px)}section[data-testid="stSidebar"] div[data-testid="stButton"] button p{color:#071A2F!important;-webkit-text-fill-color:#071A2F!important;font-weight:850!important}
 section[data-testid="stSidebar"] label p{color:#F3C84B!important;font-weight:850!important}section[data-testid="stSidebar"] div[data-testid="stSelectbox"] [data-baseweb="select"]>div{background:#FFF!important;border:2px solid #F3C84B!important}section[data-testid="stSidebar"] div[data-testid="stSelectbox"] *{color:#0B2545!important;-webkit-text-fill-color:#0B2545!important;font-weight:800!important}
+/* Keep sidebar number inputs readable across Streamlit versions. */
+section[data-testid="stSidebar"] div[data-testid="stNumberInput"]>div,
+section[data-testid="stSidebar"] div[data-testid="stNumberInput"] [data-baseweb="input"]{background:#FFF!important;border:2px solid #F3C84B!important;border-radius:10px!important;overflow:hidden!important}
+section[data-testid="stSidebar"] div[data-testid="stNumberInput"] input,
+section[data-testid="stSidebar"] input[type="number"]{background:#FFF!important;color:#071A2F!important;-webkit-text-fill-color:#071A2F!important;caret-color:#071A2F!important;font-weight:850!important;opacity:1!important}
+section[data-testid="stSidebar"] div[data-testid="stNumberInput"] button{background:#E8EEF5!important;color:#071A2F!important;border-color:#CBD8E5!important;opacity:1!important}
+section[data-testid="stSidebar"] div[data-testid="stNumberInput"] button svg,
+section[data-testid="stSidebar"] div[data-testid="stNumberInput"] button svg path{color:#071A2F!important;fill:#071A2F!important;stroke:#071A2F!important;opacity:1!important}
 @media(max-width:700px){.hero{padding:22px}.hero h1{font-size:1.7rem}}
 </style>
 """,
